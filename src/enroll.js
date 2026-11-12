@@ -2,7 +2,7 @@
   'use strict';
 
   /* ------------------------------------------------------------------
-     Canvas enrollment helper (bookmarklet) - v1.1.0
+     Canvas enrollment helper (bookmarklet)
 
      Adds or removes one user on one section using a two-line SIS import
      rather than the enrollments API. The SIS importer does not enforce

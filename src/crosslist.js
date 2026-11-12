@@ -2,7 +2,7 @@
   'use strict';
 
   /* ------------------------------------------------------------------
-     Canvas cross-list helper (bookmarklet) - v2.1.0
+     Canvas cross-list helper (bookmarklet)
 
      Moves one or more sections out of secondary courses and into a
      primary course, with a plain-language preview of what will happen
