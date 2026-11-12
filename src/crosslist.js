@@ -25,7 +25,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.1';
+  var VERSION = '2.1.2';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) { already.remove(); return; }   // second click closes it
@@ -39,18 +39,31 @@
 
   /* ---------- design tokens ------------------------------------------ */
 
-  var INK    = '#2d3b45',
-      MUTED  = '#6b7780',
-      LINE   = '#d7dade',
-      HAIR   = '#eceef0',
-      BLUE   = '#0374b5',
-      BLUEBG = '#e8f4fc',
-      GREEN  = '#0b874b',
+  var INK    = '#1C2023',
+      MUTED  = '#55656F',
+      LINE   = '#D8E0E6',
+      HAIR   = '#EDF1F4',
+      BLUE   = '#003F87',
+      BLUEBG = '#E8F2FA',
+      GREEN  = '#006B3F',
       AMBER  = '#a86200',
-      DANGER = '#c72f4a',
-      SHELL  = '#fbfcfc';
+      DANGER = '#CC2D30',
+      SHELL  = '#F4F9FD';
 
-  var FONT = '14px/1.5 Lato, "Helvetica Neue", "Segoe UI", Arial, sans-serif';
+  var FONT = '14px/1.5 "Fira Sans", "Helvetica Neue", "Segoe UI", Arial, sans-serif';
+  // Fira Sans via the FontFace API: governed by font-src only, no <style>
+  // element, so it stays CSP-safe. Falls back to the system font if blocked.
+  try {
+    if (window.FontFace && document.fonts && !window.__tcFira) {
+      window.__tcFira = true;
+      var FB = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/fonts/';
+      [['400', 'Regular'], ['500', 'Medium'], ['600', 'SemiBold'], ['700', 'Bold']].forEach(function (w) {
+        new FontFace('Fira Sans', 'url(' + FB + 'FiraSans-' + w[1] + '.woff) format("woff")', { weight: w[0] })
+          .load().then(function (f) { document.fonts.add(f); }).catch(function () {});
+      });
+    }
+  } catch (e) {}
+
 
   /* ---------- Canvas plumbing --------------------------------------- */
 
@@ -678,7 +691,7 @@
   // Credit line: tool, version, maker, and a way back to the install page.
   // A plain link, so nothing is fetched or run. The version lets someone
   // compare their installed bookmark against the page.
-  var credit = el('div', { fontSize: '12px', color: '#56606a', marginTop: '12px' },
+  var credit = el('div', { fontSize: '12px', color: '#55656F', marginTop: '12px' },
     'Cross-list sections ' + VERSION + ' \u00b7 Technology Consigliere \u00b7 ');
   var creditLink = el('a', { color: BLUE }, 'Help and updates');
   creditLink.href = HOME;

@@ -34,7 +34,9 @@ TOOLS = {
 # Characters left unencoded. Everything else is percent-encoded, including
 # quotes and angle brackets (the URL lands inside href="...") and # (some
 # browsers treat a bare # as the start of a fragment and drop the rest).
-SAFE = "!$&*+,-./:;=?@_~"
+# & is NOT safe: inside an href, "&amp;"-style text is decoded by the browser
+# when the link is dragged to the bookmarks bar, corrupting the code. %26 survives.
+SAFE = "!$*+,-./:;=?@_~"
 
 
 def main() -> int:
