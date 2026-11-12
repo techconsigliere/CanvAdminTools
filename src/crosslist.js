@@ -25,10 +25,13 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.2';
+  var VERSION = '2.1.3';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
-  if (already) { already.remove(); return; }   // second click closes it
+  if (already) {                                // second click closes it
+    if (typeof already.__tcClose === 'function') { already.__tcClose(); } else { already.remove(); }
+    return;
+  }
 
   var MAX_SECONDARY = 9;
   var HOST = location.origin;
@@ -36,6 +39,8 @@
   var primary = null;      // course the sections move INTO
   var blocks = [];         // one entry per secondary course
   var lastMoved = [];      // [{id, name}] for the undo button
+  var running = false;     // a move run is in progress
+  var cancelled = false;   // admin asked to stop after the current section
 
   /* ---------- design tokens ------------------------------------------ */
 
@@ -311,7 +316,26 @@
   headText.appendChild(headSub);
   head.appendChild(headText);
   var closeBtn = button('Close');
-  closeBtn.addEventListener('click', function () { panel.remove(); });
+  function guardUnload(e) { e.preventDefault(); e.returnValue = ''; return ''; }
+  function closePanel() {
+    if (running) {
+      if (window.confirm('Sections are still being moved. Stop after the current section? ' +
+                         'The panel stays open so you can see what moved and use Undo.')) {
+        cancelled = true;
+        say('Stopping after the current section\u2026', AMBER);
+      }
+      return;
+    }
+    window.removeEventListener('beforeunload', guardUnload);
+    panel.remove();
+  }
+  closeBtn.addEventListener('click', closePanel);
+  panel.__tcClose = closePanel;
+  function lockForm() {
+    Array.prototype.forEach.call(panel.querySelectorAll('input, select, button'), function (b) {
+      if (b !== closeBtn) { b.disabled = true; b.style.opacity = '.55'; b.style.cursor = 'default'; }
+    });
+  }
   head.appendChild(closeBtn);
   panel.appendChild(head);
 
@@ -446,14 +470,18 @@
     refreshPlan();
     if (!block.course) { return; }
     block.sectionBox.appendChild(el('div', { color: MUTED, fontSize: '13px' }, 'Loading sections\u2026'));
-    api('/api/v1/courses/' + block.course.id +
+    var cid = block.course.id;
+    var current = function () { return block.course && String(block.course.id) === String(cid); };
+    api('/api/v1/courses/' + cid +
         '/sections?per_page=100&include[]=total_students')
       .then(function (list) {
+        if (!current()) { return; }   // a newer pick replaced this course; drop the late reply
         block.sections = list || [];
         renderSections(block);
         refreshPlan();
       })
       .catch(function (err) {
+        if (!current()) { return; }
         block.sectionBox.textContent = '';
         block.sectionBox.appendChild(el('div', { color: DANGER, fontSize: '13px' },
           'Could not load sections: ' + err.message));
@@ -530,6 +558,7 @@
   /* ---------- plan + execute ----------------------------------------- */
 
   function refreshPlan() {
+    if (running) { return; }
     actions.textContent = '';
 
     if (!primary) { say('Choose the primary course first.', MUTED); return; }
@@ -586,39 +615,60 @@
     actions.appendChild(go);
   }
 
-  function auditRecord(startedAt, moved) {
-    var head = startedAt.toISOString() + ' | crosslist | into course ' + primary.id +
-               ' ' + (primary.sis_course_id || '') + ' "' + (primary.course_code || primary.name) + '"';
+  function auditRecord(startedAt, moved, target) {
+    var head = startedAt.toISOString() + ' | crosslist | into course ' + target.id +
+               ' ' + (target.sis_course_id || '') + ' "' + (target.course_code || target.name) + '"';
     var rows = moved.map(function (m) {
       return '  section ' + m.id + ' ' + (m.sis || 'no-sis') +
              ' "' + (m.name || '') + '"' +
-             ' <- home course ' + m.from + ' ' + (m.fromSis || '');
+             ' <- came from course ' + m.cameFrom + ' ' + (m.cameFromSis || '') +
+             (m.wasXlisted ? ' (Canvas home course ' + m.home + ')' : '');
     });
     return [head].concat(rows).join('\n');
   }
 
   function execute(moves) {
+    // Lock the target now. Everything below uses this copy, never the live
+    // picker, so editing the form mid-run cannot redirect the remaining moves.
+    var target = primary;
+    running = true;
+    cancelled = false;
+    lockForm();
+    window.addEventListener('beforeunload', guardUnload);
     actions.textContent = '';
     log.textContent = '';
     lastMoved = [];
     var startedAt = new Date();
-    say('Working\u2026', MUTED);
+    say('Working…', MUTED);
 
     var chain = Promise.resolve();
     moves.forEach(function (m) {
       chain = chain.then(function () {
-        return api('/api/v1/sections/' + m.section.id + '/crosslist/' + primary.id, 'POST')
-          .then(function () {
+        if (cancelled) { return; }
+        // Defense in depth: the section must still belong to the course it is listed under.
+        if (m.section.course_id != null && String(m.section.course_id) !== String(m.from.id)) {
+          log.appendChild(el('div', { color: DANGER, padding: '2px 0' },
+            'Section ' + m.section.id + ' was not moved: it no longer matches course ' +
+            m.from.id + '. Reload the panel and try again.'));
+          return;
+        }
+        return api('/api/v1/sections/' + m.section.id + '/crosslist/' + target.id, 'POST')
+          .then(function (data) {
+            if (data && data.course_id != null && String(data.course_id) !== String(target.id)) {
+              throw new Error('Canvas reports it in course ' + data.course_id + ', not ' + target.id);
+            }
             lastMoved.push({
               id: m.section.id,
               name: m.section.name,
               sis: m.section.sis_section_id,
-              from: m.from.id,
-              fromSis: m.from.sis_course_id
+              cameFrom: m.from.id,
+              cameFromSis: m.from.sis_course_id,
+              home: m.section.nonxlist_course_id || m.from.id,
+              wasXlisted: !!m.section.nonxlist_course_id
             });
             log.appendChild(el('div', { color: GREEN, padding: '2px 0' },
               'Moved section ' + m.section.id + ' "' + (m.section.name || '') +
-              '" from course ' + m.from.id + ' into course ' + primary.id + '.'));
+              '" from course ' + m.from.id + ' into course ' + target.id + '.'));
           })
           .catch(function (err) {
             log.appendChild(el('div', { color: DANGER, padding: '2px 0' },
@@ -628,18 +678,27 @@
       });
     });
 
-    chain.then(function () {
-      say(lastMoved.length + ' of ' + moves.length + ' sections moved. Details are in the panel above.',
+    chain.catch(function (err) {
+      log.appendChild(el('div', { color: DANGER, padding: '2px 0' },
+        'The run stopped unexpectedly: ' + ((err && err.message) || err)));
+    }).then(function () {
+      running = false;
+      window.removeEventListener('beforeunload', guardUnload);
+      var stopped = cancelled && lastMoved.length < moves.length;
+      say(lastMoved.length + ' of ' + moves.length + ' sections moved' +
+          (stopped ? ' (you stopped the run)' : '') +
+          '. Details are in the panel above. To set up another move, close and reopen the panel.',
           lastMoved.length === moves.length ? GREEN : DANGER);
 
-      var openLink = button('Open course ' + primary.id);
+      var openLink = button('Open course ' + target.id);
       openLink.addEventListener('click', function () {
-        window.open(HOST + '/courses/' + primary.id + '/settings#tab-sections', '_blank');
+        window.open(HOST + '/courses/' + target.id + '/settings#tab-sections', '_blank');
       });
       actions.appendChild(openLink);
 
       if (lastMoved.length) {
-        var record = auditRecord(startedAt, lastMoved);
+        var moved = lastMoved.slice();   // this run only; undo never reads a later run
+        var record = auditRecord(startedAt, moved, target);
 
         log.appendChild(el('div', {
           marginTop: '10px', paddingTop: '8px', borderTop: '1px solid ' + HAIR,
@@ -651,35 +710,42 @@
           if (!navigator.clipboard) { return; }
           navigator.clipboard.writeText(record).then(function () {
             copy.textContent = 'Copied';
-          });
+          }, function () {});
         });
         actions.appendChild(copy);
 
         log.appendChild(el('div', { color: AMBER, marginTop: '8px', lineHeight: '1.5' },
           'The undo button below only exists in this browser tab. Close or reload the tab and it ' +
-          'is gone. The audit record above lists each section\u2019s home course, which is what you ' +
-          'need to return them by hand from Settings > Sections in the primary course.'));
+          'is gone. The audit record above lists the course each section came from, which is what ' +
+          'you need to return them by hand from Settings > Sections in the primary course.'));
 
-        var undo = button('Undo \u2014 return these ' + lastMoved.length +
-                          ' sections to their home courses');
+        var undo = button('Undo: return these ' + moved.length + ' sections to where they came from');
         undo.addEventListener('click', function () {
           undo.disabled = true;
           undo.style.opacity = '.5';
+          var ok = 0;
           var back = Promise.resolve();
-          lastMoved.forEach(function (m) {
+          moved.forEach(function (m) {
             back = back.then(function () {
-              return api('/api/v1/sections/' + m.id + '/crosslist', 'DELETE')
-                .then(function () {
-                  log.appendChild(el('div', { color: BLUE, padding: '2px 0' },
-                    'Section ' + m.id + ' returned to its home course.'));
-                })
-                .catch(function (err) {
-                  log.appendChild(el('div', { color: DANGER, padding: '2px 0' },
-                    'Section ' + m.id + ' could not be returned: ' + err.message));
-                });
+              // A section that was already cross-listed goes back to the course it came
+              // from (re-cross-list), not to its Canvas home course (DELETE would do that).
+              var req = m.wasXlisted
+                ? api('/api/v1/sections/' + m.id + '/crosslist/' + m.cameFrom, 'POST')
+                : api('/api/v1/sections/' + m.id + '/crosslist', 'DELETE');
+              return req.then(function () {
+                ok++;
+                log.appendChild(el('div', { color: BLUE, padding: '2px 0' },
+                  'Section ' + m.id + ' returned to course ' + m.cameFrom + '.'));
+              }).catch(function (err) {
+                log.appendChild(el('div', { color: DANGER, padding: '2px 0' },
+                  'Section ' + m.id + ' could not be returned: ' + err.message));
+              });
             });
           });
-          back.then(function () { say('Undo finished. Reload the courses to confirm.', INK); });
+          back.then(function () {
+            say('Undo finished: ' + ok + ' of ' + moved.length + ' sections returned. Reload the courses to confirm.',
+                ok === moved.length ? GREEN : DANGER);
+          });
         });
         actions.appendChild(undo);
       }

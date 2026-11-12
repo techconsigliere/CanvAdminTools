@@ -30,10 +30,13 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-enroll-panel';
-  var VERSION = '1.1.2';
+  var VERSION = '1.1.3';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
-  if (already) { already.remove(); return; }
+  if (already) {
+    if (typeof already.__tcClose === 'function') { already.__tcClose(); } else { already.remove(); }
+    return;
+  }
 
   var HOST = location.origin;
   var accountId = null;
@@ -42,6 +45,8 @@
   var sections = [];
   var pickedSection = null;
   var pollTimer = null;
+  var running = false;     // an import is being sent or watched
+  var cancelled = false;   // panel closed; stop watching
 
   /* ---------- design tokens ------------------------------------------ */
 
@@ -391,10 +396,31 @@
   headText.appendChild(headSub);
   head.appendChild(headText);
   var closeBtn = button('Close');
-  closeBtn.addEventListener('click', function () {
-    if (pollTimer) { clearTimeout(pollTimer); }
+  function closePanel() {
+    if (running && !window.confirm('The import has already been sent to Canvas and will finish on its own. ' +
+                                   'Close the panel and stop watching it?')) {
+      return;
+    }
+    cancelled = true;
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     panel.remove();
-  });
+  }
+  closeBtn.addEventListener('click', closePanel);
+  panel.__tcClose = closePanel;
+  function lockForm(on) {
+    Array.prototype.forEach.call(panel.querySelectorAll('input, select, button'), function (b) {
+      if (b === closeBtn) { return; }
+      if (on) {
+        b.setAttribute('data-tc-lock', b.disabled ? 'was' : 'yes');
+        b.disabled = true;
+        b.style.opacity = '.55';
+      } else if (b.hasAttribute('data-tc-lock')) {
+        b.disabled = b.getAttribute('data-tc-lock') === 'was';
+        b.style.opacity = b.disabled ? '.5' : '1';
+        b.removeAttribute('data-tc-lock');
+      }
+    });
+  }
   head.appendChild(closeBtn);
   panel.appendChild(head);
 
@@ -534,14 +560,18 @@
     refreshPlan();
     if (!pickedCourse) { return; }
     sectionBox.appendChild(el('div', { color: MUTED, fontSize: '13px' }, 'Loading sections\u2026'));
-    api('/api/v1/courses/' + pickedCourse.id +
+    var cid = pickedCourse.id;
+    var current = function () { return pickedCourse && String(pickedCourse.id) === String(cid); };
+    api('/api/v1/courses/' + cid +
         '/sections?per_page=100&include[]=total_students')
       .then(function (list) {
+        if (!current()) { return; }   // a newer course pick replaced this one; drop the late reply
         sections = list || [];
         renderSections();
         refreshPlan();
       })
       .catch(function (err) {
+        if (!current()) { return; }
         sectionBox.textContent = '';
         sectionBox.appendChild(el('div', { color: DANGER, fontSize: '13px' },
           'Could not load sections: ' + err.message));
@@ -623,7 +653,13 @@
 
   /* ---------- plan ------------------------------------------------------ */
 
+  function sectionMatchesCourse() {
+    return !pickedSection || !pickedCourse || pickedSection.course_id == null ||
+           String(pickedSection.course_id) === String(pickedCourse.id);
+  }
+
   function refreshPlan() {
+    if (running) { return; }
     actions.textContent = '';
     csvBox.style.display = 'none';
 
@@ -631,6 +667,10 @@
     if (!pickedCourse) { say('Choose a course.', MUTED); return; }
     if (!sections.length) { say('Waiting on the section list.', MUTED); return; }
     if (!pickedSection) { say('Choose which section the enrollment goes into.', MUTED); return; }
+    if (!sectionMatchesCourse()) {
+      say('The section list belongs to a different course than the one chosen. Pick the course again.', DANGER);
+      return;
+    }
 
     var csv = buildCsv();
     csvBox.textContent = csv.replace(/\n$/, '');
@@ -676,10 +716,14 @@
   };
 
   function submit(csv, go) {
-    go.disabled = true;
-    go.style.opacity = '.5';
-    go.style.cursor = 'default';
-    say('Sending the import\u2026', MUTED);
+    if (!sectionMatchesCourse()) {
+      say('The section list belongs to a different course than the one chosen. Pick the course again.', DANGER);
+      return;
+    }
+    running = true;
+    cancelled = false;
+    lockForm(true);
+    say('Sending the import…', MUTED);
 
     var startedAt = new Date();
     var targetUser = pickedUser;
@@ -695,21 +739,43 @@
         return poll(imp.id, 0);
       })
       .then(function (imp) {
-        finish(imp, startedAt, targetUser, targetSection, targetCourse, targetRole, targetStatus);
-      })
-      .catch(function (err) {
+        if (cancelled) { return; }
+        return Promise.resolve(finish(imp, startedAt, targetUser, targetSection, targetCourse, targetRole, targetStatus))
+          .catch(function (err) {
+            say('The import finished, but checking the result failed: ' + err.message +
+                '. Open the section list to confirm.', AMBER);
+          })
+          .then(function () {
+            running = false;
+            lockForm(false);
+            // This exact change is done; the old button must not send it twice.
+            go.disabled = true;
+            go.style.opacity = '.5';
+            go.style.cursor = 'default';
+          });
+      }, function (err) {
+        if (cancelled) { return; }
+        running = false;
+        if (err && err.stillRunning) {
+          say(err.message + ' This panel will not send it again, so you do not get a duplicate. ' +
+              'Close and reopen the panel when you are ready for the next change.', AMBER);
+          note('Still running: ' + err.message, AMBER);
+          return;   // stay locked on purpose
+        }
         say('The import did not run: ' + err.message, DANGER);
         note('Failed: ' + err.message, DANGER);
-        go.disabled = false;
-        go.style.opacity = '1';
+        lockForm(false);
         go.style.cursor = 'pointer';
       });
   }
 
   function poll(importId, tries) {
+    if (cancelled) { return new Promise(function () {}); }   // panel closed: stop watching quietly
     if (tries > 72) {
-      return Promise.reject(new Error('The import is still running after three minutes. ' +
-        'Check Admin > SIS Import for import ' + importId + '.'));
+      var late = new Error('Import ' + importId + ' is still running after three minutes. ' +
+        'Check Admin > SIS Import for import ' + importId + '.');
+      late.stillRunning = true;
+      return Promise.reject(late);
     }
     return api('/api/v1/accounts/' + accountId + '/sis_imports/' + importId)
       .then(function (imp) {
@@ -717,6 +783,7 @@
         say('Import ' + importId + ': ' + state.replace(/_/g, ' ') +
             (imp.progress != null ? ', ' + imp.progress + '% done' : '') + '\u2026', MUTED);
         if (TERMINAL[state]) { return imp; }
+        if (cancelled) { return new Promise(function () {}); }
         return new Promise(function (resolve) {
           pollTimer = setTimeout(function () { resolve(poll(importId, tries + 1)); }, 2500);
         });
@@ -746,13 +813,21 @@
     }
 
     say('Import ' + imp.id + ' finished. Checking the roster\u2026', MUTED);
-    verify(user, section, status).then(function (result) {
-      if (result.found) {
-        say('Done. ' + (user.name || user.sortable_name) + ' is on section "' +
-            (section.name || section.id) + '" with state "' + result.state + '".', GREEN);
+    var who = user.name || user.sortable_name;
+    var where = 'section "' + (section.name || section.id) + '"';
+    return verify(user, section, role).then(function (result) {
+      if (result.error) {
+        say('Import ' + imp.id + ' finished, but the roster check could not run. Open the section ' +
+            'list and confirm before you tell anyone it is done.', AMBER);
       } else if (status === 'deleted') {
-        say('Done. ' + (user.name || user.sortable_name) +
-            ' no longer holds that enrollment on section "' + (section.name || section.id) + '".', GREEN);
+        if (result.found) {
+          say(who + ' still holds the ' + role + ' enrollment on ' + where + ' (state "' + result.state +
+              '"). The removal did not take effect. Read the messages above.', DANGER);
+        } else {
+          say('Done. ' + who + ' no longer holds the ' + role + ' enrollment on ' + where + '.', GREEN);
+        }
+      } else if (result.found) {
+        say('Done. ' + who + ' is on ' + where + ' as ' + role + ' with state "' + result.state + '".', GREEN);
       } else {
         say('Import ' + imp.id + ' reported success, but the enrollment did not turn up on ' +
             'the section roster. Open the section list and confirm before you tell anyone ' +
@@ -763,19 +838,25 @@
     });
   }
 
-  function verify(user, section, status) {
+  var ENROLLMENT_TYPE = {
+    teacher: 'TeacherEnrollment', ta: 'TaEnrollment', designer: 'DesignerEnrollment',
+    observer: 'ObserverEnrollment', student: 'StudentEnrollment'
+  };
+
+  function verify(user, section, role) {
     return api('/api/v1/sections/' + section.id + '/enrollments' +
                '?per_page=100&state[]=active&state[]=invited&state[]=completed' +
                '&user_id=' + encodeURIComponent(user.id))
       .then(function (list) {
+        var type = ENROLLMENT_TYPE[role];
         var hit = (list || []).filter(function (e) {
-          return String(e.user_id) === String(user.id);
+          return String(e.user_id) === String(user.id) && (!type || e.type === type);
         })[0];
         return hit
           ? { found: true, state: hit.enrollment_state || 'unknown' }
           : { found: false, state: null };
       })
-      .catch(function () { return { found: false, state: null }; });
+      .catch(function () { return { error: true }; });   // unverified is not success
   }
 
   function auditLine(startedAt, user, section, course, role, status, importId) {
