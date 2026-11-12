@@ -30,7 +30,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-enroll-panel';
-  var VERSION = '1.1.3';
+  var VERSION = '1.1.4';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) {
@@ -39,7 +39,9 @@
   }
 
   var HOST = location.origin;
-  var accountId = null;
+  var accountId = null;       // where searches run (may be a subaccount)
+  var rootAccountId = null;   // where SIS imports must go (always the root)
+  var planToken = 0;          // discards pre-flight checks for a plan that changed
   var pickedUser = null;
   var pickedCourse = null;
   var sections = [];
@@ -105,6 +107,26 @@
     }).then(readJson);
   }
 
+  function apiAll(path, cap) {
+    var out = [];
+    cap = cap || 2000;
+    function step(url) {
+      return fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() }
+      }).then(function (res) {
+        var link = res.headers.get('Link') || '';
+        return readJson(res).then(function (data) {
+          out = out.concat(data || []);
+          var m = link.match(/<([^>]+)>;\s*rel="next"/);
+          if (m && out.length < cap && m[1].indexOf(HOST + '/') === 0) { return step(m[1]); }
+          return out;
+        });
+      });
+    }
+    return step(HOST + path);
+  }
+
   function readJson(res) {
     return res.text().then(function (body) {
       var data = null;
@@ -144,7 +166,7 @@
   function searchUsers(term) {
     return api('/api/v1/accounts/' + accountId + '/users' +
                '?per_page=25&include[]=email&search_term=' + encodeURIComponent(term))
-      .then(function (list) { return list || []; });
+      .then(function (list) { list = list || []; list.truncated = list.length >= 25; return list; });
   }
 
   function tokensOf(term) {
@@ -161,7 +183,7 @@
     return api('/api/v1/accounts/' + accountId + '/courses' +
                '?per_page=50&include[]=term&include[]=teachers&search_term=' +
                encodeURIComponent(term))
-      .then(function (list) { return list || []; });
+      .then(function (list) { list = list || []; list.truncated = list.length >= 50; return list; });
   }
 
   function searchCourses(term) {
@@ -338,6 +360,10 @@
         row.addEventListener('mousedown', function (ev) { ev.preventDefault(); choose(item); });
         menu.appendChild(row);
       });
+      if (list.truncated) {
+        menu.appendChild(el('div', { padding: '8px 10px', color: MUTED, fontSize: '12px', fontStyle: 'italic' },
+          'Showing the first ' + list.length + ' matches. Type more to narrow the list.'));
+      }
       menu.style.display = 'block';
       highlight(0);
     }
@@ -527,12 +553,13 @@
   }
 
   var roleField = selectField('Role', [
+    ['', 'Choose a role\u2026'],
     ['teacher', 'Teacher'],
     ['ta', 'TA'],
     ['designer', 'Designer'],
     ['observer', 'Observer'],
     ['student', 'Student']
-  ], 'teacher');
+  ], '');
 
   var statusField = selectField('Status', [
     ['active', 'active (add the enrollment)'],
@@ -562,7 +589,7 @@
     sectionBox.appendChild(el('div', { color: MUTED, fontSize: '13px' }, 'Loading sections\u2026'));
     var cid = pickedCourse.id;
     var current = function () { return pickedCourse && String(pickedCourse.id) === String(cid); };
-    api('/api/v1/courses/' + cid +
+    apiAll('/api/v1/courses/' + cid +
         '/sections?per_page=100&include[]=total_students')
       .then(function (list) {
         if (!current()) { return; }   // a newer course pick replaced this one; drop the late reply
@@ -633,17 +660,8 @@
   function buildCsv() {
     var cols = [], vals = [];
 
-    if (pickedSection.sis_section_id) {
-      cols.push('section_id'); vals.push(pickedSection.sis_section_id);
-    } else {
-      cols.push('canvas_section_id'); vals.push(pickedSection.id);
-    }
-
-    if (pickedUser.sis_user_id) {
-      cols.push('user_id'); vals.push(pickedUser.sis_user_id);
-    } else {
-      cols.push('canvas_user_id'); vals.push(pickedUser.id);
-    }
+    cols.push('section_id'); vals.push(pickedSection.sis_section_id);
+    cols.push('user_id'); vals.push(pickedUser.sis_user_id);
 
     cols.push('role'); vals.push(roleField.select.value);
     cols.push('status'); vals.push(statusField.select.value);
@@ -669,6 +687,20 @@
     if (!pickedSection) { say('Choose which section the enrollment goes into.', MUTED); return; }
     if (!sectionMatchesCourse()) {
       say('The section list belongs to a different course than the one chosen. Pick the course again.', DANGER);
+      return;
+    }
+    if (!roleField.select.value) { say('Choose a role.', MUTED); return; }
+    if (!pickedUser.sis_user_id || !pickedSection.sis_section_id) {
+      say((!pickedUser.sis_user_id
+            ? (pickedUser.name || pickedUser.sortable_name) + ' has no SIS user ID'
+            : 'Section "' + (pickedSection.name || pickedSection.id) + '" has no SIS section ID') +
+          '. A SIS import can only refer to people and sections by SIS ID, so this panel cannot ' +
+          'make this change. Use the People page in the course instead.', DANGER);
+      var people = button('Open the course People page');
+      people.addEventListener('click', function () {
+        window.open(HOST + '/courses/' + pickedCourse.id + '/users', '_blank');
+      });
+      actions.appendChild(people);
       return;
     }
 
@@ -706,6 +738,50 @@
       window.open(HOST + '/courses/' + pickedCourse.id + '/users', '_blank');
     });
     actions.appendChild(openCourse);
+    preflight(++planToken, pickedUser, pickedSection, pickedCourse, roleField.select.value, removing, roleName);
+  }
+
+  /* Pre-flight facts the admin should see before clicking: does the person already
+     hold this role here, is this the course's last teacher, is it the admin themself. */
+  function preflight(token, user, section, course, role, removing, roleName) {
+    var type = ENROLLMENT_TYPE[role];
+    var warn = function (text, color) {
+      if (token !== planToken || running) { return; }   // plan changed; stale facts
+      planText.appendChild(el('div', { color: color || AMBER, marginTop: '8px', fontWeight: '700' }, text));
+    };
+    var me = window.ENV && window.ENV.current_user_id;
+    if (removing && me && String(me) === String(user.id)) {
+      warn('You are removing yourself. Make sure someone else can still reach this course.', DANGER);
+    }
+    apiAll('/api/v1/sections/' + section.id + '/enrollments?per_page=100' +
+           '&state[]=active&state[]=invited&state[]=completed&state[]=inactive' +
+           '&user_id=' + encodeURIComponent(user.id))
+      .then(function (list) {
+        var mine = (list || []).filter(function (e) {
+          return String(e.user_id) === String(user.id) && e.type === type;
+        })[0];
+        if (!removing && mine) {
+          warn((user.name || user.sortable_name) + ' already holds the ' + roleName + ' role on this section ' +
+               '(state "' + mine.enrollment_state + '"). Adding it again reactivates it if needed and makes ' +
+               'it SIS-managed, so a later batch-mode SIS job over this term could remove it.');
+        }
+        if (removing && !mine) {
+          warn((user.name || user.sortable_name) + ' does not hold the ' + roleName + ' role on this section, ' +
+               'so there may be nothing to remove. Check the role before you continue.');
+        }
+      })
+      .catch(function () {});
+    if (removing && role === 'teacher') {
+      apiAll('/api/v1/courses/' + course.id + '/enrollments?per_page=100&type[]=TeacherEnrollment&state[]=active')
+        .then(function (list) {
+          var others = (list || []).filter(function (e) { return String(e.user_id) !== String(user.id); });
+          if (!others.length) {
+            warn('This person is the only active teacher in course ' + course.id +
+                 '. Removing them leaves the course with no teacher.', DANGER);
+          }
+        })
+        .catch(function () {});
+    }
   }
 
   /* ---------- submit + poll --------------------------------------------- */
@@ -732,7 +808,7 @@
     var targetRole = roleField.select.value;
     var targetStatus = statusField.select.value;
 
-    postCsv('/api/v1/accounts/' + accountId +
+    postCsv('/api/v1/accounts/' + rootAccountId +
             '/sis_imports?import_type=instructure_csv&extension=csv', csv)
       .then(function (imp) {
         note('Import ' + imp.id + ' queued at ' + startedAt.toLocaleTimeString() + '.', BLUE);
@@ -777,7 +853,7 @@
       late.stillRunning = true;
       return Promise.reject(late);
     }
-    return api('/api/v1/accounts/' + accountId + '/sis_imports/' + importId)
+    return api('/api/v1/accounts/' + rootAccountId + '/sis_imports/' + importId)
       .then(function (imp) {
         var state = imp.workflow_state || 'unknown';
         say('Import ' + importId + ': ' + state.replace(/_/g, ' ') +
@@ -844,7 +920,7 @@
   };
 
   function verify(user, section, role) {
-    return api('/api/v1/sections/' + section.id + '/enrollments' +
+    return apiAll('/api/v1/sections/' + section.id + '/enrollments' +
                '?per_page=100&state[]=active&state[]=invited&state[]=completed' +
                '&user_id=' + encodeURIComponent(user.id))
       .then(function (list) {
@@ -899,9 +975,19 @@
 
   document.body.appendChild(panel);
   say('Finding an account to search\u2026', MUTED);
+  function resolveRoot() {
+    // SIS imports only run on a root account. Searching can stay in the subaccount.
+    return api('/api/v1/accounts/' + accountId)
+      .then(function (a) { rootAccountId = (a && a.root_account_id) || accountId; })
+      .catch(function () { rootAccountId = accountId; });
+  }
+
   resolveAccount()
+    .then(function (id) { return resolveRoot().then(function () { return id; }); })
     .then(function (id) {
-      headSub.textContent = 'Searching account ' + id + '. Writes go in as a SIS import.';
+      headSub.textContent = String(rootAccountId) === String(id)
+        ? 'Searching account ' + id + '. Writes go in as a SIS import.'
+        : 'Searching subaccount ' + id + '. Writes go in as a SIS import on root account ' + rootAccountId + '.';
       if (accountGuessed) {
         note('You have admin rights on more than one account, and this page did not name ' +
              'one, so the search and the SIS import both run against account ' + id + '. ' +

@@ -25,7 +25,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.3';
+  var VERSION = '2.1.4';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) {                                // second click closes it
@@ -100,6 +100,32 @@
     });
   }
 
+  function apiAll(path, cap) {
+    var out = [];
+    cap = cap || 2000;
+    function step(url) {
+      return fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() }
+      }).then(function (res) {
+        var link = res.headers.get('Link') || '';
+        return res.text().then(function (body) {
+          var data = null;
+          try { data = JSON.parse(body.replace(/^while\(1\);/, '')); } catch (e) {}
+          if (!res.ok) {
+            throw new Error((data && (data.message || (data.errors && JSON.stringify(data.errors)))) ||
+                            (res.status + ' ' + res.statusText));
+          }
+          out = out.concat(data || []);
+          var m = link.match(/<([^>]+)>;\s*rel="next"/);
+          if (m && out.length < cap && m[1].indexOf(HOST + '/') === 0) { return step(m[1]); }
+          return out;
+        });
+      });
+    }
+    return step(HOST + path);
+  }
+
   function resolveAccount() {
     var m = location.pathname.match(/\/accounts\/(\d+)/);
     if (m) { accountId = m[1]; return Promise.resolve(accountId); }
@@ -117,11 +143,12 @@
                '?per_page=25&include[]=term&search_term=' + encodeURIComponent(term);
     return api(path).then(function (list) {
       list = list || [];
+      list.truncated = list.length >= 25;
       if (!list.length && /^[\w.\-]{4,}$/.test(term)) {
         // Nothing matched the fuzzy search. Try an exact SIS ID lookup,
         // which reaches courses whose SIS ID does not appear in the
         // searchable name/code columns.
-        return api('/api/v1/courses/sis_course_id:' + encodeURIComponent(term) +
+        return api('/api/v1/courses/sis_course_id:' + encodeURIComponent(term).replace(/\./g, '%2E') +
                    '?include[]=term')
           .then(function (c) { return c ? [c] : []; })
           .catch(function () { return []; });
@@ -256,6 +283,10 @@
         row.addEventListener('mousedown', function (ev) { ev.preventDefault(); choose(c); });
         menu.appendChild(row);
       });
+      if (list.truncated) {
+        menu.appendChild(el('div', { padding: '8px 10px', color: MUTED, fontSize: '12px', fontStyle: 'italic' },
+          'Showing the first ' + list.length + ' matches. Type more to narrow the list.'));
+      }
       menu.style.display = 'block';
       highlight(0);
     }
@@ -472,7 +503,7 @@
     block.sectionBox.appendChild(el('div', { color: MUTED, fontSize: '13px' }, 'Loading sections\u2026'));
     var cid = block.course.id;
     var current = function () { return block.course && String(block.course.id) === String(cid); };
-    api('/api/v1/courses/' + cid +
+    apiAll('/api/v1/courses/' + cid +
         '/sections?per_page=100&include[]=total_students')
       .then(function (list) {
         if (!current()) { return; }   // a newer pick replaced this course; drop the late reply
@@ -598,6 +629,7 @@
         ' out of course' + (chosen.length === 1 ? ' ' : 's ') + sourceIds +
         ' and into course ' + primary.id + ' "' + (primary.course_code || primary.name) + '". ' +
         'Those students do their coursework in ' + primary.id + ' from that point on. ' +
+        'Teacher, TA, and any other enrollments in those sections move with them. ' +
         'The source courses keep their own content, settings, and any sections you left unchecked. ' +
         'Nothing is deleted, and Canvas records each section\u2019s home course so the move can be reversed.');
 
@@ -607,6 +639,27 @@
       }, 'Check for submitted work before moving a section in a course that has already started. ' +
          'Submissions and grades stay behind in the source course, and the students lose access to them. ' +
          'Cross-listing is safest before the term opens.'));
+    }
+
+    var termOf = function (c) { return c && c.term && c.term.id != null ? String(c.term.id) : null; };
+    var pTerm = termOf(primary);
+    var otherTerm = chosen.filter(function (b) { var t = termOf(b.course); return pTerm && t && t !== pTerm; });
+    if (otherTerm.length) {
+      planText.appendChild(el('div', { color: AMBER, marginTop: '8px', fontWeight: '700' },
+        'Course' + (otherTerm.length === 1 ? ' ' : 's ') +
+        otherTerm.map(function (b) { return b.course.id + ' (' + ((b.course.term && b.course.term.name) || 'another term') + ')'; }).join(', ') +
+        (otherTerm.length === 1 ? ' is' : ' are') + ' not in the primary course\u2019s term (' +
+        ((primary.term && primary.term.name) || 'unknown') + '). Moving sections across terms changes ' +
+        'those students\u2019 enrollment dates and when they can get in.'));
+    }
+    var concluded = [primary].concat(chosen.map(function (b) { return b.course; }))
+      .filter(function (c) { return c && c.workflow_state === 'completed'; });
+    if (concluded.length) {
+      planText.appendChild(el('div', { color: AMBER, marginTop: '8px', fontWeight: '700' },
+        'Course' + (concluded.length === 1 ? ' ' : 's ') +
+        concluded.map(function (c) { return c.id; }).join(', ') +
+        (concluded.length === 1 ? ' is' : ' are') + ' concluded. Students in a concluded course ' +
+        'can only view it, and moving sections in or out of one rarely does what people expect.'));
     }
 
     var go = button('Move ' + moves.length + ' section' + (moves.length === 1 ? '' : 's') +
