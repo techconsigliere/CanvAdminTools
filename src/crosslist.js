@@ -25,7 +25,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.5';
+  var VERSION = '2.1.6';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) {                                // second click closes it
@@ -78,50 +78,72 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
-  function api(path, method) {
-    return fetch(HOST + path, {
-      method: method || 'GET',
-      credentials: 'same-origin',
-      headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() }
-    }).then(function (res) {
-      return res.text().then(function (body) {
-        var data = null;
-        // Canvas prefixes some JSON responses with while(1); as an anti-
-        // hijacking measure. /api/v1 normally does not, but stripping it
-        // costs nothing and avoids a confusing parse failure.
-        try { data = JSON.parse(body.replace(/^while\(1\);/, '')); } catch (e) {}
-        if (!res.ok) {
-          var msg = (data && (data.message ||
-                     (data.errors && JSON.stringify(data.errors)))) ||
-                    (res.status + ' ' + res.statusText);
-          throw new Error(msg);
+  var SIGNED_OUT = 'Canvas answered with a sign-in page instead of data, which usually means ' +
+    'your session expired. Reload this tab, sign in again, and run the tool again. Anything ' +
+    'already finished is listed in the panel.';
+  var THROTTLED = 'Canvas is throttling requests from this tab and kept saying "slow down" ' +
+    'after several retries. Wait a minute and try again. Anything already finished is listed in the panel.';
+
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function init(method, body, type) {
+    var h = { 'Accept': 'application/json', 'X-CSRF-Token': csrf() };
+    if (type) { h['Content-Type'] = type; }
+    return { method: method || 'GET', credentials: 'same-origin', headers: h, body: body };
+  }
+
+  function failure(res, data, url) {
+    if (res.status === 401) { return new Error(SIGNED_OUT); }
+    var msg = (data && (data.message || (data.errors && JSON.stringify(data.errors)))) ||
+              (res.status + ' ' + res.statusText);
+    return new Error(msg);
+  }
+
+  // Every call goes through here. Canvas throttles with 429 (or a 403 saying
+  // "Rate Limit Exceeded"); a throttled request did nothing, so it is safe to
+  // wait and resend, doubling the wait each time, up to five tries. When the
+  // remaining quota runs low the tool also pauses a beat on its own.
+  function request(url, opts, tries) {
+    tries = tries || 0;
+    return fetch(url, opts).then(function (res) {
+      return res.text().then(function (text) {
+        var throttled = res.status === 429 || (res.status === 403 && /rate limit exceeded/i.test(text));
+        if (throttled) {
+          if (tries >= 5) { throw new Error(THROTTLED); }
+          return sleep(1000 * Math.pow(2, tries) + Math.floor(Math.random() * 300))
+            .then(function () { return request(url, opts, tries + 1); });
         }
-        return data;
+        var type = res.headers.get('Content-Type') || '';
+        if (/\/login(\/|\?|$)/.test(res.url || '') || (res.ok && /text\/html/i.test(type))) {
+          throw new Error(SIGNED_OUT);
+        }
+        var data = null;
+        // Canvas can prefix JSON with while(1); as an anti-hijacking measure.
+        try { data = JSON.parse(text.replace(/^while\(1\);/, '')); } catch (e) {}
+        if (!res.ok) { throw failure(res, data, url); }
+        if (data === null && text.trim()) {
+          throw new Error('Canvas sent back something this tool could not read (' + (type || 'no type') + ').');
+        }
+        var out = { data: data, link: res.headers.get('Link') || '' };
+        var left = parseFloat(res.headers.get('X-Rate-Limit-Remaining'));
+        return left < 100 ? sleep(1000).then(function () { return out; }) : out;
       });
     });
+  }
+
+  function api(path, method) {
+    return request(HOST + path, init(method)).then(function (r) { return r.data; });
   }
 
   function apiAll(path, cap) {
     var out = [];
     cap = cap || 2000;
     function step(url) {
-      return fetch(url, {
-        credentials: 'same-origin',
-        headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() }
-      }).then(function (res) {
-        var link = res.headers.get('Link') || '';
-        return res.text().then(function (body) {
-          var data = null;
-          try { data = JSON.parse(body.replace(/^while\(1\);/, '')); } catch (e) {}
-          if (!res.ok) {
-            throw new Error((data && (data.message || (data.errors && JSON.stringify(data.errors)))) ||
-                            (res.status + ' ' + res.statusText));
-          }
-          out = out.concat(data || []);
-          var m = link.match(/<([^>]+)>;\s*rel="next"/);
-          if (m && out.length < cap && m[1].indexOf(HOST + '/') === 0) { return step(m[1]); }
-          return out;
-        });
+      return request(url, init()).then(function (r) {
+        out = out.concat(r.data || []);
+        var m = r.link.match(/<([^>]+)>;\s*rel="next"/);
+        if (m && out.length < cap && m[1].indexOf(HOST + '/') === 0) { return step(m[1]); }
+        return out;
       });
     }
     return step(HOST + path);
@@ -451,12 +473,21 @@
       panel.style.top = box.top + 'px';
       ev.preventDefault();
     });
-    document.addEventListener('mousemove', function (ev) {
+    // Page-level listeners take themselves off once the panel is gone,
+    // whichever way it was closed.
+    function onMove(ev) {
+      if (!panel.isConnected) { detach(); return; }
       if (!dragging) { return; }
       panel.style.left = Math.max(0, ev.clientX - offX) + 'px';
       panel.style.top = Math.max(0, ev.clientY - offY) + 'px';
-    });
-    document.addEventListener('mouseup', function () { dragging = false; });
+    }
+    function onUp() { dragging = false; if (!panel.isConnected) { detach(); } }
+    function detach() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   })();
 
   var body = el('div', { padding: '18px', overflowY: 'auto', flex: '1 1 auto' });
@@ -849,7 +880,7 @@
       var openLink = button('Open course ' + target.id);
       openLink.setAttribute('aria-label', 'Open course ' + target.id + ' section settings (opens in a new tab)');
       openLink.addEventListener('click', function () {
-        window.open(HOST + '/courses/' + target.id + '/settings#tab-sections', '_blank');
+        window.open(HOST + '/courses/' + target.id + '/settings#tab-sections', '_blank', 'noopener');
       });
       actions.appendChild(openLink);
 
@@ -863,13 +894,7 @@
         }, record));
 
         var copy = button('Copy the audit record');
-        copy.addEventListener('click', function () {
-          if (!navigator.clipboard) { return; }
-          navigator.clipboard.writeText(record).then(function () {
-            copy.textContent = 'Copied';
-            announce('Audit record copied to the clipboard.');
-          }, function () {});
-        });
+        wireCopy(copy, record);
         actions.appendChild(copy);
 
         log.appendChild(el('div', { color: AMBER, marginTop: '8px', lineHeight: '1.5' },
@@ -913,6 +938,43 @@
     });
   }
 
+  // Clipboard API first; the old execCommand route for pages where it is blocked.
+  function copyText(text) {
+    function legacy() {
+      var ta = el('textarea', { position: 'fixed', top: '0', left: '0', opacity: '0' });
+      ta.value = text;
+      panel.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) {}
+      ta.remove();
+      return ok ? Promise.resolve() : Promise.reject(new Error('blocked'));
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(legacy);
+    }
+    return legacy();
+  }
+  function wireCopy(btn, text) {
+    btn.addEventListener('click', function () {
+      copyText(text).then(function () {
+        btn.textContent = 'Copied';
+        announce('Audit record copied to the clipboard.');
+      }, function () {
+        btn.textContent = 'Copy blocked: select the record and press Ctrl+C or \u2318C';
+        announce('This page blocked copying. Select the audit record and copy it by hand.', true);
+      });
+      btn.focus();
+    });
+  }
+
+  // Search needs the account; keep the fields shut until it is known.
+  function setReady(on) {
+    var ins = panel.querySelectorAll('input[type=text]');
+    for (var i = 0; i < ins.length; i++) { ins[i].disabled = !on; }
+    addBtn.disabled = !on;
+  }
+
   /* ---------- start -------------------------------------------------- */
 
   // Credit line: tool, version, maker, and a way back to the install page.
@@ -930,12 +992,20 @@
 
   document.body.appendChild(panel);
   addSecondary();
-  primaryCombo.focus();
-  say('Finding an account to search\u2026', MUTED);
-  resolveAccount()
-    .then(function (id) {
-      headSub.textContent = 'Searching courses in account ' + id;
-      refreshPlan();
-    })
-    .catch(function (err) { say(err.message, DANGER); });
+  setReady(false);
+  if (!csrf()) {
+    say('Canvas\'s security token is missing from this tab, so every change would be refused. ' +
+        'Open a regular Canvas page (not a file preview or an embedded tool), reload it, and ' +
+        'click the bookmarklet again.', DANGER);
+  } else {
+    say('Finding an account to search\u2026', MUTED);
+    resolveAccount()
+      .then(function (id) {
+        headSub.textContent = 'Searching courses in account ' + id;
+        setReady(true);
+        primaryCombo.focus();
+        refreshPlan();
+      })
+      .catch(function (err) { say(err.message, DANGER); });
+  }
 })();
