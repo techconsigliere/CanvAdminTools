@@ -28,7 +28,7 @@
 
   const TOOL_ID = 'qacc-tool';
   const VERSION = '0.4.1';
-  const HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/teacher/';
+  const HOME = 'https://techconsigliere.github.io/CanvAdminTools/teacher/';
   const CONCURRENCY = 3;        // reads in flight at once while loading
   const RATE_FLOOR = 150;       // pause briefly when X-Rate-Limit-Remaining drops below this
   const RATE_RETRIES = 3;       // retries after a rate-limit refusal

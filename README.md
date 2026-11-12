@@ -1,8 +1,8 @@
-# Canvas Admin Bookmarklets
+# CanvAdminTools
 
 Small browser tools for Canvas LMS administrators. Each one runs inside a Canvas tab you are already signed in to, does one job that the Canvas UI makes tedious, and gets out of the way.
 
-**Install page:** https://techconsigliere.github.io/canvas-admin-bookmarklets/
+**Install page:** https://techconsigliere.github.io/CanvAdminTools/
 
 ## Before you run anything from the internet in an admin session
 
@@ -76,7 +76,7 @@ It then prints a one-line audit record carrying the timestamp, the import ID, th
 
 ## Installing
 
-Drag the buttons from the [install page](https://techconsigliere.github.io/canvas-admin-bookmarklets/) to your bookmarks bar. That is the whole process.
+Drag the buttons from the [install page](https://techconsigliere.github.io/CanvAdminTools/) to your bookmarks bar. That is the whole process.
 
 If you would rather not drag a link from a web page, the manual route works identically: show your bookmarks bar (`Ctrl/Cmd+Shift+B`), right-click it, choose **Add page** in Chrome or **Add Bookmark** in Firefox, name it whatever you like, and paste the contents of the matching file in `dist/` into the **URL** field.
 

@@ -25,8 +25,8 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.6';
-  var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
+  var VERSION = '2.1.7';
+  var HOME = 'https://techconsigliere.github.io/CanvAdminTools/';
   var already = document.getElementById(PANEL_ID);
   if (already) {                                // second click closes it
     if (typeof already.__tcClose === 'function') { already.__tcClose(); } else { already.remove(); }
@@ -62,7 +62,7 @@
   try {
     if (window.FontFace && document.fonts && !window.__tcFira) {
       window.__tcFira = true;
-      var FB = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/fonts/';
+      var FB = 'https://techconsigliere.github.io/CanvAdminTools/fonts/';
       [['400', 'Regular'], ['500', 'Medium'], ['600', 'SemiBold'], ['700', 'Bold']].forEach(function (w) {
         new FontFace('Fira Sans', 'url(' + FB + 'FiraSans-' + w[1] + '.woff) format("woff")', { weight: w[0] })
           .load().then(function (f) { document.fonts.add(f); }).catch(function () {});
