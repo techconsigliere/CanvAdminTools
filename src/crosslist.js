@@ -25,7 +25,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-xlist-panel';
-  var VERSION = '2.1.4';
+  var VERSION = '2.1.5';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) {                                // second click closes it
@@ -51,9 +51,10 @@
       BLUE   = '#003F87',
       BLUEBG = '#E8F2FA',
       GREEN  = '#006B3F',
-      AMBER  = '#a86200',
+      AMBER  = '#9A5800',
       DANGER = '#CC2D30',
-      SHELL  = '#F4F9FD';
+      SHELL  = '#F4F9FD',
+      FIELD  = '#7A8791';   // input/select borders: 3:1 against white
 
   var FONT = '14px/1.5 "Fira Sans", "Helvetica Neue", "Segoe UI", Arial, sans-serif';
   // Fira Sans via the FontFace API: governed by font-src only, no <style>
@@ -178,6 +179,13 @@
     return e;
   }
 
+  var uid = 0;
+  function nextId(p) { return PANEL_ID + '-' + p + '-' + (++uid); }
+  function srOnly() {
+    return { position: 'absolute', width: '1px', height: '1px', padding: '0', margin: '-1px',
+             overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: '0' };
+  }
+
   function button(text, kind) {
     var solid = kind === 'primary';
     var quiet = kind === 'quiet';
@@ -195,6 +203,9 @@
     }, text);
     b.type = 'button';
     b.addEventListener('focus', function () {
+      var kb = true;
+      try { kb = b.matches(':focus-visible'); } catch (e) {}
+      if (!kb) { return; }
       b.style.outline = '2px solid ' + BLUE;
       b.style.outlineOffset = '2px';
     });
@@ -220,18 +231,25 @@
     }, labelText);
     var input = el('input', {
       width: '100%', boxSizing: 'border-box', padding: '9px 10px',
-      border: '1px solid ' + LINE, borderRadius: '4px',
+      border: '1px solid ' + FIELD, borderRadius: '4px',
       font: 'inherit', fontSize: '14px', color: INK, background: '#fff'
     });
     input.type = 'text';
     input.autocomplete = 'off';
-    input.placeholder = 'Type 3 or more characters of the SIS ID, course code, or name';
+    var inputId = nextId('in'), menuId = nextId('menu'), hintId = nextId('hint');
+    input.id = inputId;
+    lab.htmlFor = inputId;
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', menuId);
+    input.setAttribute('aria-describedby', hintId);
     input.addEventListener('focus', function () {
       input.style.borderColor = BLUE;
       input.style.boxShadow = 'inset 0 0 0 1px ' + BLUE;
     });
     input.addEventListener('blur', function () {
-      input.style.borderColor = LINE;
+      input.style.borderColor = FIELD;
       input.style.boxShadow = 'none';
     });
 
@@ -241,21 +259,34 @@
       boxShadow: '0 4px 14px rgba(0,0,0,.16)', maxHeight: '260px',
       overflowY: 'auto', display: 'none', zIndex: '10'
     });
+    menu.id = menuId;
+    menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', labelText + ' results');
     var picked = el('div', {
       marginTop: '7px', fontSize: '13px', color: BLUE, lineHeight: '1.4'
     });
 
     var timer = null, rows = [], cursor = -1;
 
-    function closeMenu() { menu.style.display = 'none'; rows = []; cursor = -1; }
+    function closeMenu() {
+      menu.style.display = 'none'; rows = []; cursor = -1;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
 
     function highlight(i) {
       var kids = menu.children;
       for (var n = 0; n < kids.length; n++) {
-        kids[n].style.background = (n === i) ? BLUEBG : '#fff';
+        var on = (n === i) && n < rows.length;
+        kids[n].style.background = on ? BLUEBG : '#fff';
+        kids[n].style.boxShadow = on ? 'inset 3px 0 0 ' + BLUE : 'none';   // not color alone
+        if (n < rows.length) { kids[n].setAttribute('aria-selected', on ? 'true' : 'false'); }
       }
       cursor = i;
-      if (kids[i]) { kids[i].scrollIntoView({ block: 'nearest' }); }
+      if (kids[i] && i < rows.length) {
+        input.setAttribute('aria-activedescendant', kids[i].id);
+        kids[i].scrollIntoView({ block: 'nearest' });
+      }
     }
 
     function choose(c) {
@@ -263,6 +294,7 @@
       input.value = (c.course_code || c.name || '') + ' (id ' + c.id + ')';
       picked.textContent = courseLine(c);
       onPick(c);
+      announce('Selected ' + input.value + '.');
     }
 
     function render(list) {
@@ -272,6 +304,7 @@
         menu.appendChild(el('div', { padding: '10px', color: MUTED, fontSize: '13px' },
           'No courses matched. Try the SIS ID or the course code.'));
         menu.style.display = 'block';
+        announce(menu.textContent);
         return;
       }
       list.forEach(function (c, i) {
@@ -279,6 +312,8 @@
           padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid ' + HAIR,
           fontSize: '13px', lineHeight: '1.4'
         }, courseLine(c));
+        row.id = menuId + '-o' + i;
+        row.setAttribute('role', 'option');
         row.addEventListener('mouseenter', function () { highlight(i); });
         row.addEventListener('mousedown', function (ev) { ev.preventDefault(); choose(c); });
         menu.appendChild(row);
@@ -288,7 +323,11 @@
           'Showing the first ' + list.length + ' matches. Type more to narrow the list.'));
       }
       menu.style.display = 'block';
+      input.setAttribute('aria-expanded', 'true');
       highlight(0);
+      announce(list.length + (list.length === 1 ? ' match' : ' matches') +
+               (list.truncated ? ', first page only' : '') +
+               '. Use the up and down arrows, then Enter to choose.');
     }
 
     input.addEventListener('input', function () {
@@ -303,6 +342,7 @@
           menu.appendChild(el('div', { padding: '10px', color: DANGER, fontSize: '13px' },
             'Search failed: ' + err.message));
           menu.style.display = 'block';
+          announce('Search failed: ' + err.message, true);
         });
       }, 300);
     });
@@ -312,12 +352,16 @@
       if (ev.key === 'ArrowDown') { ev.preventDefault(); highlight(Math.min(cursor + 1, rows.length - 1)); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); highlight(Math.max(cursor - 1, 0)); }
       else if (ev.key === 'Enter') { ev.preventDefault(); if (rows[cursor]) { choose(rows[cursor]); } }
-      else if (ev.key === 'Escape') { closeMenu(); }
+      else if (ev.key === 'Escape') { ev.stopPropagation(); closeMenu(); }
     });
 
     input.addEventListener('blur', function () { setTimeout(closeMenu, 150); });
 
     wrap.appendChild(lab);
+    var hint = el('div', { fontSize: '12px', color: MUTED, margin: '0 0 5px' },
+      'Type 3 or more characters of the SIS ID, course code, or name.');
+    hint.id = hintId;
+    wrap.appendChild(hint);
     wrap.appendChild(input);
     wrap.appendChild(menu);
     wrap.appendChild(picked);
@@ -327,13 +371,20 @@
   /* ---------- panel shell -------------------------------------------- */
 
   var panel = el('div', {
-    position: 'fixed', top: '16px', right: '16px', width: '540px', maxHeight: '90vh',
+    position: 'fixed', top: '16px', right: '16px', width: 'min(540px, calc(100vw - 32px))', maxHeight: '90vh',
     zIndex: '99999', background: '#fff', color: INK,
     border: '1px solid ' + LINE, borderRadius: '8px',
     boxShadow: '0 10px 40px rgba(0,0,0,.22)',
     font: FONT, display: 'flex', flexDirection: 'column'
   });
   panel.id = PANEL_ID;
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'false');
+  panel.setAttribute('aria-labelledby', PANEL_ID + '-title');
+  var prevFocus = document.activeElement;
+  panel.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closePanel(); }
+  });
 
   var head = el('div', {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -342,7 +393,10 @@
     flex: '0 0 auto'
   });
   var headText = el('div');
-  headText.appendChild(el('div', { fontWeight: '700', fontSize: '16px' }, 'Cross-list sections'));
+  var titleEl = el('h2', { fontWeight: '700', fontSize: '16px', margin: '0', color: INK, lineHeight: '1.3' }, 'Cross-list sections');
+  titleEl.id = PANEL_ID + '-title';
+  titleEl.setAttribute('tabindex', '-1');
+  headText.appendChild(titleEl);
   var headSub = el('div', { fontSize: '13px', color: MUTED, marginTop: '2px' }, '');
   headText.appendChild(headSub);
   head.appendChild(headText);
@@ -359,15 +413,27 @@
     }
     window.removeEventListener('beforeunload', guardUnload);
     panel.remove();
+    if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
   }
   closeBtn.addEventListener('click', closePanel);
   panel.__tcClose = closePanel;
   function lockForm() {
     Array.prototype.forEach.call(panel.querySelectorAll('input, select, button'), function (b) {
-      if (b !== closeBtn) { b.disabled = true; b.style.opacity = '.55'; b.style.cursor = 'default'; }
+      if (b !== closeBtn && b !== dockBtn) { b.disabled = true; b.style.opacity = '.55'; b.style.cursor = 'default'; }
     });
   }
-  head.appendChild(closeBtn);
+  var dockBtn = button('Move to left side');
+  dockBtn.addEventListener('click', function () {
+    var onRight = panel.style.left === '' || panel.style.left === 'auto';
+    if (onRight) { panel.style.left = '16px'; panel.style.right = 'auto'; }
+    else { panel.style.left = 'auto'; panel.style.right = '16px'; }
+    panel.style.top = '16px';
+    dockBtn.textContent = onRight ? 'Move to right side' : 'Move to left side';
+  });
+  var headBtns = el('div', { display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto' });
+  headBtns.appendChild(dockBtn);
+  headBtns.appendChild(closeBtn);
+  head.appendChild(headBtns);
   panel.appendChild(head);
 
   // Drag the panel by its header so it never sits on top of something
@@ -407,9 +473,25 @@
   foot.appendChild(planText);
   foot.appendChild(actions);
 
+  planText.setAttribute('tabindex', '-1');
+  var liveStatus = el('div', srOnly());
+  liveStatus.setAttribute('role', 'status');
+  var liveAlert = el('div', srOnly());
+  liveAlert.setAttribute('role', 'alert');
+  panel.appendChild(liveStatus);
+  panel.appendChild(liveAlert);
+  function announce(text, urgent) {
+    var r = urgent ? liveAlert : liveStatus;
+    r.textContent = '';
+    setTimeout(function () { r.textContent = text; }, 40);
+  }
+
+  var lastSayColor = INK;
   function say(text, color) {
     planText.textContent = text;
     planText.style.color = color || INK;
+    lastSayColor = color || INK;
+    if (color === DANGER) { announce(text, true); }   // the plan text itself is not live (it would chatter)
   }
 
   /* ---------- primary course ----------------------------------------- */
@@ -454,7 +536,7 @@
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       marginBottom: '10px'
     });
-    block.titleEl = el('div', { fontWeight: '700', fontSize: '13px', color: MUTED }, '');
+    block.titleEl = el('h3', { fontWeight: '700', fontSize: '13px', color: MUTED, margin: '0' }, '');
     cardHead.appendChild(block.titleEl);
     var rm = button('Remove', 'quiet');
     rm.addEventListener('click', function () {
@@ -462,7 +544,10 @@
       card.remove();
       renumber();
       refreshPlan();
+      announce('Secondary course removed.');
+      if (blocks.length) { blocks[blocks.length - 1].focus(); } else { addBtn.focus(); }
     });
+    block.rmBtn = rm;
     cardHead.appendChild(rm);
     card.appendChild(cardHead);
 
@@ -472,6 +557,7 @@
       loadSections(block);
     });
     card.appendChild(cb.wrap);
+    block.focus = cb.focus;
 
     block.sectionBox = el('div', { marginTop: '12px' });
     card.appendChild(block.sectionBox);
@@ -486,6 +572,7 @@
   function renumber() {
     blocks.forEach(function (b, i) {
       b.titleEl.textContent = 'Secondary course ' + (i + 1) + ' of ' + blocks.length;
+      b.rmBtn.setAttribute('aria-label', 'Remove secondary course ' + (i + 1));
     });
     addBtn.disabled = blocks.length >= MAX_SECONDARY;
     addBtn.style.opacity = addBtn.disabled ? '.5' : '1';
@@ -531,16 +618,28 @@
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       margin: '0 0 6px'
     });
-    listHead.appendChild(el('div', {
-      fontWeight: '700', fontSize: '13px', color: INK
-    }, 'Sections to move (' + block.sections.length + ')'));
+    var capId = nextId('cap');
+    var cap = el('div', { fontWeight: '700', fontSize: '13px', color: INK },
+      'Sections to move (' + block.sections.length + ')');
+    cap.id = capId;
+    listHead.appendChild(cap);
+    boxEl.setAttribute('role', 'group');
+    boxEl.setAttribute('aria-labelledby', capId);
 
     var toggle = button('Select all', 'quiet');
+    var courseName = (block.course && (block.course.course_code || block.course.name)) || 'this course';
+    function syncToggle() {
+      var all = boxEl.querySelectorAll('input[type=checkbox]'), on = 0;
+      for (var k = 0; k < all.length; k++) { if (all[k].checked) { on++; } }
+      toggle.textContent = (all.length && on === all.length) ? 'Select none' : 'Select all';
+      toggle.setAttribute('aria-label', toggle.textContent + ' sections in ' + courseName);
+    }
+    syncToggle();
     toggle.addEventListener('click', function () {
       var boxes = boxEl.querySelectorAll('input[type=checkbox]');
       var turnOn = toggle.textContent === 'Select all';
       for (var i = 0; i < boxes.length; i++) { boxes[i].checked = turnOn; }
-      toggle.textContent = turnOn ? 'Select none' : 'Select all';
+      syncToggle();
       refreshPlan();
     });
     listHead.appendChild(toggle);
@@ -556,7 +655,7 @@
       box.type = 'checkbox';
       box.checked = false;   // opt in per section; bulk moves are deliberate
       box.dataset.sectionId = s.id;
-      box.addEventListener('change', refreshPlan);
+      box.addEventListener('change', function () { syncToggle(); refreshPlan(); });
       row.appendChild(box);
 
       var text = el('span');
@@ -687,12 +786,15 @@
     running = true;
     cancelled = false;
     lockForm();
+    planText.focus();
     window.addEventListener('beforeunload', guardUnload);
     actions.textContent = '';
     log.textContent = '';
     lastMoved = [];
     var startedAt = new Date();
     say('Working…', MUTED);
+    announce('Moving ' + moves.length + ' section' + (moves.length === 1 ? '' : 's') +
+             ' into course ' + target.id + '.');
 
     var chain = Promise.resolve();
     moves.forEach(function (m) {
@@ -742,8 +844,10 @@
           (stopped ? ' (you stopped the run)' : '') +
           '. Details are in the panel above. To set up another move, close and reopen the panel.',
           lastMoved.length === moves.length ? GREEN : DANGER);
+      if (lastMoved.length === moves.length) { announce(planText.textContent); }
 
       var openLink = button('Open course ' + target.id);
+      openLink.setAttribute('aria-label', 'Open course ' + target.id + ' section settings (opens in a new tab)');
       openLink.addEventListener('click', function () {
         window.open(HOST + '/courses/' + target.id + '/settings#tab-sections', '_blank');
       });
@@ -763,6 +867,7 @@
           if (!navigator.clipboard) { return; }
           navigator.clipboard.writeText(record).then(function () {
             copy.textContent = 'Copied';
+            announce('Audit record copied to the clipboard.');
           }, function () {});
         });
         actions.appendChild(copy);
@@ -774,7 +879,9 @@
 
         var undo = button('Undo: return these ' + moved.length + ' sections to where they came from');
         undo.addEventListener('click', function () {
+          planText.focus();
           undo.disabled = true;
+          announce('Returning ' + moved.length + ' sections.');
           undo.style.opacity = '.5';
           var ok = 0;
           var back = Promise.resolve();
@@ -798,6 +905,7 @@
           back.then(function () {
             say('Undo finished: ' + ok + ' of ' + moved.length + ' sections returned. Reload the courses to confirm.',
                 ok === moved.length ? GREEN : DANGER);
+            if (ok === moved.length) { announce(planText.textContent); }
           });
         });
         actions.appendChild(undo);
@@ -812,7 +920,8 @@
   // compare their installed bookmark against the page.
   var credit = el('div', { fontSize: '12px', color: '#55656F', marginTop: '12px' },
     'Cross-list sections ' + VERSION + ' \u00b7 Technology Consigliere \u00b7 ');
-  var creditLink = el('a', { color: BLUE }, 'Help and updates');
+  var creditLink = el('a', { color: BLUE, textDecoration: 'underline' }, 'Help and updates');
+  creditLink.setAttribute('aria-label', 'Help and updates (opens in a new tab)');
   creditLink.href = HOME;
   creditLink.target = '_blank';
   creditLink.rel = 'noopener noreferrer';
@@ -821,6 +930,7 @@
 
   document.body.appendChild(panel);
   addSecondary();
+  primaryCombo.focus();
   say('Finding an account to search\u2026', MUTED);
   resolveAccount()
     .then(function (id) {

@@ -30,7 +30,7 @@
      ------------------------------------------------------------------ */
 
   var PANEL_ID = 'cbm-enroll-panel';
-  var VERSION = '1.1.4';
+  var VERSION = '1.1.5';
   var HOME = 'https://techconsigliere.github.io/canvas-admin-bookmarklets/';
   var already = document.getElementById(PANEL_ID);
   if (already) {
@@ -59,9 +59,10 @@
       BLUE   = '#003F87',
       BLUEBG = '#E8F2FA',
       GREEN  = '#006B3F',
-      AMBER  = '#a86200',
+      AMBER  = '#9A5800',
       DANGER = '#CC2D30',
-      SHELL  = '#F4F9FD';
+      SHELL  = '#F4F9FD',
+      FIELD  = '#7A8791';   // input/select borders: 3:1 against white
 
   var FONT = '14px/1.5 "Fira Sans", "Helvetica Neue", "Segoe UI", Arial, sans-serif';
   // Fira Sans via the FontFace API: governed by font-src only, no <style>
@@ -228,6 +229,13 @@
     return e;
   }
 
+  var uid = 0;
+  function nextId(p) { return PANEL_ID + '-' + p + '-' + (++uid); }
+  function srOnly() {
+    return { position: 'absolute', width: '1px', height: '1px', padding: '0', margin: '-1px',
+             overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: '0' };
+  }
+
   function button(text, kind) {
     var solid = kind === 'primary';
     var warn = kind === 'danger';
@@ -245,6 +253,9 @@
     }, text);
     b.type = 'button';
     b.addEventListener('focus', function () {
+      var kb = true;
+      try { kb = b.matches(':focus-visible'); } catch (e) {}
+      if (!kb) { return; }
       b.style.outline = '2px solid ' + BLUE;
       b.style.outlineOffset = '2px';
     });
@@ -289,22 +300,31 @@
 
   function combo(labelText, placeholder, runSearch, mainOf, subOf, onPick) {
     var wrap = el('div', { position: 'relative' });
-    wrap.appendChild(fieldLabel(labelText));
+    var lab = fieldLabel(labelText);
+    wrap.appendChild(lab);
 
     var input = el('input', {
       width: '100%', boxSizing: 'border-box', padding: '9px 10px',
-      border: '1px solid ' + LINE, borderRadius: '4px',
+      border: '1px solid ' + FIELD, borderRadius: '4px',
       font: 'inherit', fontSize: '14px', color: INK, background: '#fff'
     });
     input.type = 'text';
     input.autocomplete = 'off';
+    var inputId = nextId('in'), menuId = nextId('menu'), hintId = nextId('hint');
+    input.id = inputId;
+    lab.htmlFor = inputId;
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-expanded', 'false');
+    input.setAttribute('aria-controls', menuId);
+    input.setAttribute('aria-describedby', hintId);
     input.placeholder = placeholder;
     input.addEventListener('focus', function () {
       input.style.borderColor = BLUE;
       input.style.boxShadow = 'inset 0 0 0 1px ' + BLUE;
     });
     input.addEventListener('blur', function () {
-      input.style.borderColor = LINE;
+      input.style.borderColor = FIELD;
       input.style.boxShadow = 'none';
     });
 
@@ -314,21 +334,34 @@
       boxShadow: '0 4px 14px rgba(0,0,0,.16)', maxHeight: '300px',
       overflowY: 'auto', display: 'none', zIndex: '10'
     });
+    menu.id = menuId;
+    menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', labelText + ' results');
     var picked = el('div', {
       marginTop: '7px', fontSize: '13px', color: BLUE, lineHeight: '1.4'
     });
 
     var timer = null, rows = [], cursor = -1;
 
-    function closeMenu() { menu.style.display = 'none'; rows = []; cursor = -1; }
+    function closeMenu() {
+      menu.style.display = 'none'; rows = []; cursor = -1;
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
+    }
 
     function highlight(i) {
       var kids = menu.children;
       for (var n = 0; n < kids.length; n++) {
-        kids[n].style.background = (n === i) ? BLUEBG : '#fff';
+        var on = (n === i) && n < rows.length;
+        kids[n].style.background = on ? BLUEBG : '#fff';
+        kids[n].style.boxShadow = on ? 'inset 3px 0 0 ' + BLUE : 'none';   // not color alone
+        if (n < rows.length) { kids[n].setAttribute('aria-selected', on ? 'true' : 'false'); }
       }
       cursor = i;
-      if (kids[i]) { kids[i].scrollIntoView({ block: 'nearest' }); }
+      if (kids[i] && i < rows.length) {
+        input.setAttribute('aria-activedescendant', kids[i].id);
+        kids[i].scrollIntoView({ block: 'nearest' });
+      }
     }
 
     function choose(item) {
@@ -336,6 +369,7 @@
       input.value = mainOf(item);
       picked.textContent = subOf(item);
       onPick(item);
+      announce('Selected ' + input.value + '.');
     }
 
     function render(list) {
@@ -345,6 +379,7 @@
         menu.appendChild(el('div', { padding: '10px', color: MUTED, fontSize: '13px' },
           'Nothing matched. Try fewer words, or the SIS ID.'));
         menu.style.display = 'block';
+        announce(menu.textContent);
         return;
       }
       list.forEach(function (item, i) {
@@ -356,6 +391,8 @@
         row.appendChild(el('div', {
           fontSize: '12px', color: MUTED, lineHeight: '1.35', marginTop: '1px'
         }, subOf(item)));
+        row.id = menuId + '-o' + i;
+        row.setAttribute('role', 'option');
         row.addEventListener('mouseenter', function () { highlight(i); });
         row.addEventListener('mousedown', function (ev) { ev.preventDefault(); choose(item); });
         menu.appendChild(row);
@@ -365,7 +402,11 @@
           'Showing the first ' + list.length + ' matches. Type more to narrow the list.'));
       }
       menu.style.display = 'block';
+      input.setAttribute('aria-expanded', 'true');
       highlight(0);
+      announce(list.length + (list.length === 1 ? ' match' : ' matches') +
+               (list.truncated ? ', first page only' : '') +
+               '. Use the up and down arrows, then Enter to choose.');
     }
 
     input.addEventListener('input', function () {
@@ -380,6 +421,7 @@
           menu.appendChild(el('div', { padding: '10px', color: DANGER, fontSize: '13px' },
             'Search failed: ' + err.message));
           menu.style.display = 'block';
+          announce('Search failed: ' + err.message, true);
         });
       }, 300);
     });
@@ -389,11 +431,14 @@
       if (ev.key === 'ArrowDown') { ev.preventDefault(); highlight(Math.min(cursor + 1, rows.length - 1)); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); highlight(Math.max(cursor - 1, 0)); }
       else if (ev.key === 'Enter') { ev.preventDefault(); if (rows[cursor]) { choose(rows[cursor]); } }
-      else if (ev.key === 'Escape') { closeMenu(); }
+      else if (ev.key === 'Escape') { ev.stopPropagation(); closeMenu(); }
     });
 
     input.addEventListener('blur', function () { setTimeout(closeMenu, 150); });
 
+    var hint = el('div', { fontSize: '12px', color: MUTED, margin: '0 0 5px' }, placeholder);
+    hint.id = hintId;
+    wrap.appendChild(hint);
     wrap.appendChild(input);
     wrap.appendChild(menu);
     wrap.appendChild(picked);
@@ -403,13 +448,20 @@
   /* ---------- panel shell --------------------------------------------- */
 
   var panel = el('div', {
-    position: 'fixed', top: '16px', right: '16px', width: '580px', maxHeight: '92vh',
+    position: 'fixed', top: '16px', right: '16px', width: 'min(580px, calc(100vw - 32px))', maxHeight: '92vh',
     zIndex: '99999', background: '#fff', color: INK,
     border: '1px solid ' + LINE, borderRadius: '8px',
     boxShadow: '0 10px 40px rgba(0,0,0,.22)',
     font: FONT, display: 'flex', flexDirection: 'column'
   });
   panel.id = PANEL_ID;
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'false');
+  panel.setAttribute('aria-labelledby', PANEL_ID + '-title');
+  var prevFocus = document.activeElement;
+  panel.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') { ev.preventDefault(); closePanel(); }
+  });
 
   var head = el('div', {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -417,7 +469,10 @@
     background: SHELL, borderRadius: '8px 8px 0 0', cursor: 'move', flex: '0 0 auto'
   });
   var headText = el('div');
-  headText.appendChild(el('div', { fontWeight: '700', fontSize: '16px' }, 'Add a person to a section'));
+  var titleEl = el('h2', { fontWeight: '700', fontSize: '16px', margin: '0', color: INK, lineHeight: '1.3' }, 'Add a person to a section');
+  titleEl.id = PANEL_ID + '-title';
+  titleEl.setAttribute('tabindex', '-1');
+  headText.appendChild(titleEl);
   var headSub = el('div', { fontSize: '13px', color: MUTED, marginTop: '2px' }, '');
   headText.appendChild(headSub);
   head.appendChild(headText);
@@ -430,12 +485,13 @@
     cancelled = true;
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     panel.remove();
+    if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
   }
   closeBtn.addEventListener('click', closePanel);
   panel.__tcClose = closePanel;
   function lockForm(on) {
     Array.prototype.forEach.call(panel.querySelectorAll('input, select, button'), function (b) {
-      if (b === closeBtn) { return; }
+      if (b === closeBtn || b === dockBtn) { return; }
       if (on) {
         b.setAttribute('data-tc-lock', b.disabled ? 'was' : 'yes');
         b.disabled = true;
@@ -447,7 +503,18 @@
       }
     });
   }
-  head.appendChild(closeBtn);
+  var dockBtn = button('Move to left side');
+  dockBtn.addEventListener('click', function () {
+    var onRight = panel.style.left === '' || panel.style.left === 'auto';
+    if (onRight) { panel.style.left = '16px'; panel.style.right = 'auto'; }
+    else { panel.style.left = 'auto'; panel.style.right = '16px'; }
+    panel.style.top = '16px';
+    dockBtn.textContent = onRight ? 'Move to right side' : 'Move to left side';
+  });
+  var headBtns = el('div', { display: 'flex', gap: '8px', alignItems: 'center', flex: '0 0 auto' });
+  headBtns.appendChild(dockBtn);
+  headBtns.appendChild(closeBtn);
+  head.appendChild(headBtns);
   panel.appendChild(head);
 
   (function makeDraggable() {
@@ -485,15 +552,33 @@
     padding: '9px 11px', margin: '0 0 10px', whiteSpace: 'pre', overflowX: 'auto',
     color: INK, display: 'none'
   });
+  csvBox.setAttribute('tabindex', '0');
+  csvBox.setAttribute('aria-label', 'CSV preview of the SIS import');
   var planText = el('div', { fontSize: '13px', lineHeight: '1.5', marginBottom: '10px' });
   var actions = el('div', { display: 'flex', gap: '8px', flexWrap: 'wrap' });
   foot.appendChild(csvBox);
   foot.appendChild(planText);
   foot.appendChild(actions);
 
+  planText.setAttribute('tabindex', '-1');
+  var liveStatus = el('div', srOnly());
+  liveStatus.setAttribute('role', 'status');
+  var liveAlert = el('div', srOnly());
+  liveAlert.setAttribute('role', 'alert');
+  panel.appendChild(liveStatus);
+  panel.appendChild(liveAlert);
+  function announce(text, urgent) {
+    var r = urgent ? liveAlert : liveStatus;
+    r.textContent = '';
+    setTimeout(function () { r.textContent = text; }, 40);
+  }
+
+  var lastSayColor = INK;
   function say(text, color) {
     planText.textContent = text;
     planText.style.color = color || INK;
+    lastSayColor = color || INK;
+    if (color === DANGER) { announce(text, true); }   // the plan text itself is not live (it would chatter)
   }
 
   /* ---------- fields --------------------------------------------------- */
@@ -535,10 +620,11 @@
 
   function selectField(labelText, options, value) {
     var w = el('div', { flex: '1 1 200px' });
-    w.appendChild(fieldLabel(labelText));
+    var lab = fieldLabel(labelText);
+    w.appendChild(lab);
     var s = el('select', {
       width: '100%', boxSizing: 'border-box', padding: '8px 9px',
-      border: '1px solid ' + LINE, borderRadius: '4px',
+      border: '1px solid ' + FIELD, borderRadius: '4px',
       font: 'inherit', fontSize: '14px', color: INK, background: '#fff'
     });
     options.forEach(function (o) {
@@ -548,6 +634,8 @@
     });
     s.value = value;
     s.addEventListener('change', refreshPlan);
+    s.id = nextId('sel');
+    lab.htmlFor = s.id;
     w.appendChild(s);
     return { wrap: w, select: s };
   }
@@ -615,6 +703,9 @@
     sectionBox.appendChild(el('div', {
       fontWeight: '700', fontSize: '13px', margin: '0 0 6px'
     }, 'Section (' + sections.length + ')'));
+    sectionBox.lastChild.id = PANEL_ID + '-seccap';
+    sectionBox.setAttribute('role', 'radiogroup');
+    sectionBox.setAttribute('aria-labelledby', PANEL_ID + '-seccap');
 
     sections.forEach(function (s, i) {
       var row = el('label', {
@@ -786,6 +877,7 @@
 
   /* ---------- submit + poll --------------------------------------------- */
 
+  var lastPollState = null;
   var TERMINAL = {
     imported: 1, imported_with_messages: 1, failed: 1,
     failed_with_messages: 1, aborted: 1
@@ -799,7 +891,10 @@
     running = true;
     cancelled = false;
     lockForm(true);
+    planText.focus();
     say('Sending the import…', MUTED);
+    announce('Sending the import to Canvas.');
+    lastPollState = null;
 
     var startedAt = new Date();
     var targetUser = pickedUser;
@@ -836,6 +931,7 @@
           say(err.message + ' This panel will not send it again, so you do not get a duplicate. ' +
               'Close and reopen the panel when you are ready for the next change.', AMBER);
           note('Still running: ' + err.message, AMBER);
+          announce(planText.textContent);
           return;   // stay locked on purpose
         }
         say('The import did not run: ' + err.message, DANGER);
@@ -856,6 +952,10 @@
     return api('/api/v1/accounts/' + rootAccountId + '/sis_imports/' + importId)
       .then(function (imp) {
         var state = imp.workflow_state || 'unknown';
+        if (state !== lastPollState) {   // announce changes, not every 2.5-second poll
+          lastPollState = state;
+          if (!TERMINAL[state]) { announce('Import ' + importId + ' is ' + state.replace(/_/g, ' ') + '.'); }
+        }
         say('Import ' + importId + ': ' + state.replace(/_/g, ' ') +
             (imp.progress != null ? ', ' + imp.progress + '% done' : '') + '\u2026', MUTED);
         if (TERMINAL[state]) { return imp; }
@@ -909,6 +1009,7 @@
             'the section roster. Open the section list and confirm before you tell anyone ' +
             'it is done.', AMBER);
       }
+      if (lastSayColor !== DANGER) { announce(planText.textContent); }
       note(auditLine(startedAt, user, section, course, role, status, imp.id), MUTED);
       addCopyButton(auditLine(startedAt, user, section, course, role, status, imp.id));
     });
@@ -953,6 +1054,7 @@
       if (navigator.clipboard) {
         navigator.clipboard.writeText(line).then(function () {
           copy.textContent = 'Copied';
+            announce('Audit record copied to the clipboard.');
         });
       }
     });
@@ -966,7 +1068,8 @@
   // compare their installed bookmark against the page.
   var credit = el('div', { fontSize: '12px', color: '#55656F', marginTop: '12px' },
     'Add or remove enrollment ' + VERSION + ' \u00b7 Technology Consigliere \u00b7 ');
-  var creditLink = el('a', { color: BLUE }, 'Help and updates');
+  var creditLink = el('a', { color: BLUE, textDecoration: 'underline' }, 'Help and updates');
+  creditLink.setAttribute('aria-label', 'Help and updates (opens in a new tab)');
   creditLink.href = HOME;
   creditLink.target = '_blank';
   creditLink.rel = 'noopener noreferrer';
